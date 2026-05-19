@@ -5,8 +5,7 @@ digital signature scheme.
 
 > **Paper:** Accelerating FAEST Signing on GPU via CUDA Batch Parallelization  
 > **Authors:** Ha-Gyeong Kim, Seung-Won Lee, Min-Ho Song, Si-Woo Eum, and Hwa-Jeong Seo  
-> **Affiliation:** Hansung University, Seoul, Korea  
-> **Venue:** 2026 부채널정보분석 경진대회
+> **Affiliation:** Hansung University, Seoul, Korea
 
 ---
 
