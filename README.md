@@ -9,6 +9,18 @@ digital signature scheme.
 
 ---
 
+## Repository Layout
+
+- `faest-cuda/` — modified FAEST v2.0.4 with CUDA Sign-path acceleration
+  (includes `faest-cuda/cuda/` with 15 new CUDA source files)
+- `faest-ref/` — original FAEST v2.0.4 reference implementation
+  (upstream commit `5113c66`, unmodified)
+- `results/` — benchmark summary CSV
+
+All build and test commands below run from the `faest-cuda/` directory.
+
+---
+
 ## What this is
 
 FAEST is a post-quantum digital signature scheme based on the
@@ -66,9 +78,9 @@ This repository is based on
 (upstream commit `5113c66`), licensed under the MIT License.
 The original `LICENSE` file is preserved.
 
-Modified tracked files: `.gitignore`, `bavc.c`, `bavc.h`, `meson.build`,
+Modified files in `faest-cuda/`: `bavc.c`, `bavc.h`, `meson.build`,
 `meson_options.txt`, `tests/meson.build`.  
-All new CUDA source files are in the `cuda/` directory (15 files).
+New CUDA source files: `faest-cuda/cuda/` (15 files).
 
 ---
 
@@ -85,6 +97,7 @@ All new CUDA source files are in the `cuda/` directory (15 files).
 ### CUDA correctness build
 
 ```bash
+cd faest-cuda
 meson setup builddir-cuda \
   -Dbuildtype=release \
   -Duse_cuda=true \
@@ -99,6 +112,7 @@ Replace `sm_86` with your GPU's compute capability
 ### CUDA benchmark build
 
 ```bash
+cd faest-cuda
 meson setup builddir-cuda-bench \
   -Dbuildtype=release \
   -Duse_cuda=true \
@@ -118,6 +132,7 @@ meson compile -C builddir-cuda-bench \
 ### Meson CUDA tests (correctness)
 
 ```bash
+cd faest-cuda
 meson test -C builddir-cuda \
   cuda_faest_128s cuda_faest_128f \
   cuda_faest_192s cuda_faest_256s \
@@ -127,7 +142,7 @@ meson test -C builddir-cuda \
 ### Unit tests (Layer 1–3A)
 
 ```bash
-cd cuda
+cd faest-cuda/cuda
 make test-all
 ```
 
@@ -136,6 +151,12 @@ make test-all
 ## Benchmark
 
 ```bash
+cd faest-cuda
+meson compile -C builddir-cuda-bench \
+  faest_128s_cuda_bench \
+  faest_192s_cuda_bench \
+  faest_256s_cuda_bench
+
 cd builddir-cuda-bench
 
 # Run warm-up separately before measuring
