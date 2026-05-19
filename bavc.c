@@ -14,7 +14,14 @@
 #include "universal_hashing.h"
 
 #include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+#if defined(USE_CUDA_GPU)
+#include "cuda/leaf_hash_cuda.cuh"
+#endif
 
 #define NODE(nodes, node, lambda_bytes) (&nodes[(node) * (lambda_bytes)])
 
@@ -118,26 +125,129 @@ static void bavc_commit_faest(bavc_t* bavc, const uint8_t* root_key, const uint8
 
   // Step: 4..5
   // compute commitments for remaining instances
-  for (unsigned int i = 0, offset = 0; i < params->tau; ++i) {
-    uint8_t uhash[MAX_LAMBDA_BYTES * 3];
-    H0_squeeze(&uhash_ctx, uhash, 3 * lambda_bytes);
+#if defined(USE_CUDA_GPU)
+  if (lambda == 128 || lambda == 192 || lambda == 256) {
+    /* x0_bytes = lambda_bytes (BF*_NUM_BYTES, no struct padding)
+     * uhash_bytes = com_size = 3 * lambda_bytes (BF(3λ)_NUM_BYTES)
+     * 128: x0=16B(2 limbs), uhash=48B(6 limbs)
+     * 192: x0=24B(3 limbs), uhash=72B(9 limbs)
+     * 256: x0=32B(4 limbs), uhash=96B(12 limbs) */
+    const unsigned int x0_bytes    = lambda_bytes;
+    const unsigned int uhash_bytes = com_size;
+    const unsigned int x0_limbs    = x0_bytes / 8;
+    const unsigned int uhash_limbs = uhash_bytes / 8;
 
-    H1_context_t h1_ctx;
-    H1_init(&h1_ctx, lambda);
+    uint64_t* uhash_buf = (uint64_t*)malloc(L * uhash_limbs * sizeof(uint64_t));
+    uint64_t* x0_buf    = (uint64_t*)malloc(L * x0_limbs    * sizeof(uint64_t));
+    uint64_t* x1_buf    = (uint64_t*)malloc(L * uhash_limbs * sizeof(uint64_t));
+    uint64_t* out_buf   = (uint64_t*)malloc(L * uhash_limbs * sizeof(uint64_t));
+    assert(uhash_buf && x0_buf && x1_buf && out_buf);
 
-    const unsigned int N_i = bavc_max_node_index(i, params->tau1, params->k);
-    for (unsigned int j = 0; j < N_i; ++j, ++offset) {
-      const unsigned int alpha = pos_in_tree(i, j, params);
-      faest_leaf_commit(bavc->sd + offset * lambda_bytes, bavc->com + offset * com_size,
-                        NODE(nodes, alpha, lambda_bytes), iv, i + L - 1, uhash, lambda);
-      H1_update(&h1_ctx, bavc->com + offset * com_size, com_size);
+#ifdef CUDA_TIMING
+    struct timespec _t0, _t1, _t2, _t3, _t4;
+    clock_gettime(CLOCK_MONOTONIC, &_t0);  /* gpu_path_start */
+    clock_gettime(CLOCK_MONOTONIC, &_t1);  /* pass1_start */
+#endif
+
+    /* Pass 1 (CPU): PRG, collect GPU inputs, write sd */
+    for (unsigned int i = 0, offset = 0; i < params->tau; ++i) {
+      uint8_t uhash[MAX_LAMBDA_BYTES * 3];
+      H0_squeeze(&uhash_ctx, uhash, 3 * lambda_bytes);
+
+      const unsigned int N_i = bavc_max_node_index(i, params->tau1, params->k);
+      for (unsigned int j = 0; j < N_i; ++j, ++offset) {
+        const unsigned int alpha = pos_in_tree(i, j, params);
+        uint8_t buffer[MAX_LAMBDA_BYTES * 4];
+        prg_4_lambda(NODE(nodes, alpha, lambda_bytes), iv, i + L - 1, buffer, lambda);
+
+        memcpy(bavc->sd  + offset * lambda_bytes,  buffer,            lambda_bytes);
+        memcpy(uhash_buf + offset * uhash_limbs,   uhash,             uhash_bytes);
+        memcpy(x0_buf    + offset * x0_limbs,      buffer,            x0_bytes);
+        memcpy(x1_buf    + offset * uhash_limbs,   buffer + x0_bytes, uhash_bytes);
+      }
     }
 
-    uint8_t hi[MAX_LAMBDA_BYTES * 2];
-    // Step 11
-    H1_final(&h1_ctx, hi, lambda_bytes * 2);
-    // Step 12
-    H1_update(&h1_com_ctx, hi, lambda_bytes * 2);
+    /* Pass 2 (GPU): batch leaf_hash_128 */
+#ifdef CUDA_TIMING
+    clock_gettime(CLOCK_MONOTONIC, &_t2);  /* pass1_end / wrapper_start */
+#endif
+    int rc;
+    if (lambda == 128)
+      rc = leaf_hash_128_batch_cuda(uhash_buf, x0_buf, x1_buf, out_buf, (int)L);
+    else if (lambda == 192)
+      rc = leaf_hash_192_batch_cuda(uhash_buf, x0_buf, x1_buf, out_buf, (int)L);
+    else
+      rc = leaf_hash_256_batch_cuda(uhash_buf, x0_buf, x1_buf, out_buf, (int)L);
+#ifdef CUDA_TIMING
+    clock_gettime(CLOCK_MONOTONIC, &_t3);  /* wrapper_end / pass3_start */
+#endif
+    if (rc != 0) {
+      fprintf(stderr, "leaf_hash_%u_batch_cuda failed: rc=%d\n", lambda, rc);
+      abort();
+    }
+
+    /* Pass 3 (CPU): write com + H1_update in original i,j order */
+    for (unsigned int i = 0, offset = 0; i < params->tau; ++i) {
+      H1_context_t h1_ctx;
+      H1_init(&h1_ctx, lambda);
+
+      const unsigned int N_i = bavc_max_node_index(i, params->tau1, params->k);
+      for (unsigned int j = 0; j < N_i; ++j, ++offset) {
+        memcpy(bavc->com + offset * com_size,
+               ((const uint8_t*)out_buf) + offset * com_size,
+               com_size);
+        H1_update(&h1_ctx, bavc->com + offset * com_size, com_size);
+      }
+
+      uint8_t hi[MAX_LAMBDA_BYTES * 2];
+      H1_final(&h1_ctx, hi, lambda_bytes * 2);
+      H1_update(&h1_com_ctx, hi, lambda_bytes * 2);
+    }
+
+#ifdef CUDA_TIMING
+    clock_gettime(CLOCK_MONOTONIC, &_t4);  /* pass3_end / gpu_path_end */
+    {
+        long long pass1_us   = (_t2.tv_sec - _t1.tv_sec)*1000000LL
+                             + (_t2.tv_nsec - _t1.tv_nsec)/1000;
+        long long wrapper_us = (_t3.tv_sec - _t2.tv_sec)*1000000LL
+                             + (_t3.tv_nsec - _t2.tv_nsec)/1000;
+        long long pass3_us   = (_t4.tv_sec - _t3.tv_sec)*1000000LL
+                             + (_t4.tv_nsec - _t3.tv_nsec)/1000;
+        long long total_us   = (_t4.tv_sec - _t0.tv_sec)*1000000LL
+                             + (_t4.tv_nsec - _t0.tv_nsec)/1000;
+        fprintf(stderr,
+            "[CUDA_TIMING_BAVC] N=%u"
+            " pass1_us=%lld wrapper_call_us=%lld pass3_us=%lld"
+            " gpu_path_us=%lld\n",
+            L, pass1_us, wrapper_us, pass3_us, total_us);
+    }
+#endif
+    free(uhash_buf); free(x0_buf); free(x1_buf); free(out_buf);
+  } else
+#endif
+  {
+    /* CPU 1-pass path (original, preserved as-is) */
+    for (unsigned int i = 0, offset = 0; i < params->tau; ++i) {
+      uint8_t uhash[MAX_LAMBDA_BYTES * 3];
+      H0_squeeze(&uhash_ctx, uhash, 3 * lambda_bytes);
+
+      H1_context_t h1_ctx;
+      H1_init(&h1_ctx, lambda);
+
+      const unsigned int N_i = bavc_max_node_index(i, params->tau1, params->k);
+      for (unsigned int j = 0; j < N_i; ++j, ++offset) {
+        const unsigned int alpha = pos_in_tree(i, j, params);
+        faest_leaf_commit(bavc->sd + offset * lambda_bytes, bavc->com + offset * com_size,
+                          NODE(nodes, alpha, lambda_bytes), iv, i + L - 1, uhash, lambda);
+        H1_update(&h1_ctx, bavc->com + offset * com_size, com_size);
+      }
+
+      uint8_t hi[MAX_LAMBDA_BYTES * 2];
+      // Step 11
+      H1_final(&h1_ctx, hi, lambda_bytes * 2);
+      // Step 12
+      H1_update(&h1_com_ctx, hi, lambda_bytes * 2);
+    }
   }
   H0_clear(&uhash_ctx);
 
@@ -449,3 +559,128 @@ void bavc_clear(bavc_t* com) {
   free(com->h);
   free(com->k);
 }
+
+#if defined(FAEST_TESTS) && defined(USE_CUDA_GPU)
+/* Common implementation for 128/192/256 CUDA test helpers.
+ * x0_bytes = lambda_bytes (BF*_NUM_BYTES, no struct padding)
+ * uhash_bytes = com_size = 3 * lambda_bytes
+ * 128: x0=16B(2L), uhash=48B(6L)
+ * 192: x0=24B(3L), uhash=72B(9L)
+ * 256: x0=32B(4L), uhash=96B(12L) */
+static bool bavc_commit_faest_cuda_test_impl(bavc_t* bavc, const uint8_t* root_key,
+                                              const uint8_t* iv,
+                                              const faest_paramset_t* params) {
+  const unsigned int lambda       = params->lambda;
+  const unsigned int L            = params->L;
+  const unsigned int lambda_bytes = lambda / 8;
+  const unsigned int com_size     = lambda_bytes * 3;
+  const unsigned int x0_bytes     = lambda_bytes;
+  const unsigned int uhash_bytes  = com_size;
+  const unsigned int x0_limbs     = x0_bytes / 8;
+  const unsigned int uhash_limbs  = uhash_bytes / 8;
+
+  H0_context_t uhash_ctx;
+  H0_init(&uhash_ctx, lambda);
+  H0_update(&uhash_ctx, iv, IV_SIZE);
+  H0_final_for_squeeze(&uhash_ctx);
+
+  H1_context_t h1_com_ctx;
+  H1_init(&h1_com_ctx, lambda);
+
+  uint8_t* nodes = generate_seeds(root_key, iv, params);
+
+  bavc->h   = malloc(lambda_bytes * 2);
+  bavc->com = malloc(L * com_size);
+  bavc->sd  = malloc(L * lambda_bytes);
+  assert(bavc->h && bavc->com && bavc->sd);
+
+  bavc->k = NODE(nodes, 0, lambda_bytes);
+  assert(bavc->h && bavc->com && bavc->sd && bavc->k);
+
+  uint64_t* uhash_buf = (uint64_t*)malloc(L * uhash_limbs * sizeof(uint64_t));
+  uint64_t* x0_buf    = (uint64_t*)malloc(L * x0_limbs    * sizeof(uint64_t));
+  uint64_t* x1_buf    = (uint64_t*)malloc(L * uhash_limbs * sizeof(uint64_t));
+  uint64_t* out_buf   = (uint64_t*)malloc(L * uhash_limbs * sizeof(uint64_t));
+  assert(uhash_buf && x0_buf && x1_buf && out_buf);
+
+  /* Pass 1: PRG on CPU, collect GPU inputs, write sd */
+  for (unsigned int i = 0, offset = 0; i < params->tau; ++i) {
+    uint8_t uhash[MAX_LAMBDA_BYTES * 3];
+    H0_squeeze(&uhash_ctx, uhash, 3 * lambda_bytes);
+
+    const unsigned int N_i = bavc_max_node_index(i, params->tau1, params->k);
+    for (unsigned int j = 0; j < N_i; ++j, ++offset) {
+      const unsigned int alpha = pos_in_tree(i, j, params);
+      uint8_t buffer[MAX_LAMBDA_BYTES * 4];
+      prg_4_lambda(NODE(nodes, alpha, lambda_bytes), iv, i + L - 1, buffer, lambda);
+
+      memcpy(bavc->sd  + offset * lambda_bytes,  buffer,            lambda_bytes);
+      memcpy(uhash_buf + offset * uhash_limbs,   uhash,             uhash_bytes);
+      memcpy(x0_buf    + offset * x0_limbs,      buffer,            x0_bytes);
+      memcpy(x1_buf    + offset * uhash_limbs,   buffer + x0_bytes, uhash_bytes);
+    }
+  }
+
+  /* Pass 2: GPU batch leaf_hash (wrapper selected by lambda) */
+  int rc;
+  if (lambda == 128)
+    rc = leaf_hash_128_batch_cuda(uhash_buf, x0_buf, x1_buf, out_buf, (int)L);
+  else if (lambda == 192)
+    rc = leaf_hash_192_batch_cuda(uhash_buf, x0_buf, x1_buf, out_buf, (int)L);
+  else
+    rc = leaf_hash_256_batch_cuda(uhash_buf, x0_buf, x1_buf, out_buf, (int)L);
+
+  if (rc != 0) {
+    free(uhash_buf); free(x0_buf); free(x1_buf); free(out_buf);
+    H0_clear(&uhash_ctx);
+    return false;
+  }
+
+  /* Pass 3: write com + H1_update in original i,j order */
+  for (unsigned int i = 0, offset = 0; i < params->tau; ++i) {
+    H1_context_t h1_ctx;
+    H1_init(&h1_ctx, lambda);
+
+    const unsigned int N_i = bavc_max_node_index(i, params->tau1, params->k);
+    for (unsigned int j = 0; j < N_i; ++j, ++offset) {
+      memcpy(bavc->com + offset * com_size,
+             ((const uint8_t*)out_buf) + offset * com_size,
+             com_size);
+      H1_update(&h1_ctx, bavc->com + offset * com_size, com_size);
+    }
+
+    uint8_t hi[MAX_LAMBDA_BYTES * 2];
+    H1_final(&h1_ctx, hi, lambda_bytes * 2);
+    H1_update(&h1_com_ctx, hi, lambda_bytes * 2);
+  }
+
+  free(uhash_buf); free(x0_buf); free(x1_buf); free(out_buf);
+  H0_clear(&uhash_ctx);
+  H1_final(&h1_com_ctx, bavc->h, lambda_bytes * 2);
+  return true;
+}
+
+bool bavc_commit_faest_128_cuda_test(bavc_t* bavc, const uint8_t* root_key,
+                                      const uint8_t* iv,
+                                      const faest_paramset_t* params) {
+  if (!bavc || !root_key || !iv || !params) return false;
+  if (params->lambda != 128) return false;
+  return bavc_commit_faest_cuda_test_impl(bavc, root_key, iv, params);
+}
+
+bool bavc_commit_faest_192_cuda_test(bavc_t* bavc, const uint8_t* root_key,
+                                      const uint8_t* iv,
+                                      const faest_paramset_t* params) {
+  if (!bavc || !root_key || !iv || !params) return false;
+  if (params->lambda != 192) return false;
+  return bavc_commit_faest_cuda_test_impl(bavc, root_key, iv, params);
+}
+
+bool bavc_commit_faest_256_cuda_test(bavc_t* bavc, const uint8_t* root_key,
+                                      const uint8_t* iv,
+                                      const faest_paramset_t* params) {
+  if (!bavc || !root_key || !iv || !params) return false;
+  if (params->lambda != 256) return false;
+  return bavc_commit_faest_cuda_test_impl(bavc, root_key, iv, params);
+}
+#endif /* FAEST_TESTS && USE_CUDA_GPU */

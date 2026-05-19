@@ -1,2 +1,40 @@
-build*/
-.vscode/
+# Build directories
+builddir/
+builddir-*/
+
+# Compiled object files and libraries
+*.o
+*.a
+*.so
+*.so.*
+
+# CUDA profiling outputs
+*.nsys-rep
+*.sqlite
+*.qdstrm
+
+# Benchmark and timing CSV logs
+*.csv
+
+# NVIDIA Nsight reports
+*.ncu-rep
+
+# Meson private files
+.mesonpy/
+
+# CUDA unit test binaries (executables only, not .cu sources)
+/cuda/test_bavc_commit_128
+/cuda/test_bavc_commit_192
+/cuda/test_bavc_commit_256
+/cuda/test_bf384_mul_128
+/cuda/test_bf576_mul_192
+/cuda/test_bf768_mul_256
+/cuda/test_leaf_hash_128
+/cuda/test_leaf_hash_192
+/cuda/test_leaf_hash_256
+
+# Intermediate object files in cuda/ directory
+/cuda/cpu_ref_bf384.o
+/cuda/leaf_hash_cuda.o
+/cuda/bavc_test.o
+/cuda/libfaest_cpu.a

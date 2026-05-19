@@ -713,6 +713,181 @@ run_target(
 
 )
 
+# CUDA GPU acceleration (optional, activated with -Duse_cuda=true)
+if get_option('use_cuda')
+  nvcc = find_program('nvcc', required: true)
+  cuda_lib_dir = join_paths(get_option('faest_cuda_path'), 'lib64')
+
+  leaf_hash_cuda_obj = custom_target(
+    'leaf_hash_cuda_obj',
+    input:   files('cuda/leaf_hash_cuda.cu'),
+    output:  'leaf_hash_cuda.o',
+    command: [
+      nvcc,
+      '-O2',
+      '-arch=' + get_option('faest_cuda_arch'),
+      '-I' + meson.project_source_root(),
+      '-I' + meson.project_build_root(),
+      '-c', '@INPUT@', '-o', '@OUTPUT@',
+    ] + (get_option('faest_cuda_timing') ? ['-DCUDA_TIMING'] : []),
+  )
+
+  libfaest_no_random_cuda_static = static_library(
+    'faest_no_random_cuda',
+    faest_sources,
+    dependencies: build_dependencies + [valgrind],
+    include_directories: include_directories,
+    c_args: defines + c_flags
+      + ['-DFAEST_STATIC', '-DFAEST_EXPORT=', '-DFAEST_TESTS', '-DUSE_CUDA_GPU']
+      + (get_option('faest_cuda_timing') ? ['-DCUDA_TIMING'] : [])
+      + valgrind_defines,
+    override_options: ['b_lto=false'],
+  )
+
+  libfaest_cuda_static = static_library(
+    'faest_cuda',
+    files('randomness.c'),
+    dependencies: build_dependencies + [valgrind]
+      + [declare_dependency(
+           link_with: libfaest_no_random_cuda_static,
+           include_directories: include_directories,
+           compile_args: ['-DFAEST_EXPORT='],
+         )],
+    include_directories: include_directories,
+    c_args: defines + c_flags
+      + ['-DFAEST_STATIC', '-DFAEST_EXPORT=', '-DFAEST_TESTS']
+      + valgrind_defines,
+  )
+
+  cudart = cpp.find_library('cudart',
+    dirs: [cuda_lib_dir],
+    required: true,
+  )
+
+  libfaest_cuda_static_dependency = declare_dependency(
+    link_with: libfaest_cuda_static,
+    include_directories: include_directories,
+    compile_args: ['-DFAEST_EXPORT='],
+  )
+
+  # faest_128s CUDA bench target (requires -Dbenchmarks=enabled)
+  if get_option('benchmarks').enabled()
+    _boost_po = dependency('boost',
+      required: get_option('benchmarks'),
+      modules: ['program_options'])
+    _threads = dependency('threads')
+    _faest_128s_build_dir = join_paths(meson.project_build_root(), 'faest_128s')
+
+    # Regenerate crypto_sign.c for faest_128s against CUDA-enabled lib
+    _cuda_bench_sign_src = configure_file(
+      input: 'crypto_sign.c.in',
+      output: 'faest_128s_cuda_crypto_sign.c',
+      configuration: param_128s,
+    )
+
+    _libfaest_128s_cuda_variant = static_library(
+      'faest_128s_cuda_variant',
+      _cuda_bench_sign_src,
+      dependencies: [libfaest_cuda_static_dependency],
+      include_directories: include_directories,
+      c_args: defines + c_flags + ['-I' + _faest_128s_build_dir],
+      override_options: ['b_lto=false'],
+    )
+
+    _libfaest_128s_cuda_variant_dep = declare_dependency(
+      link_with: _libfaest_128s_cuda_variant,
+      include_directories: include_directories,
+    )
+
+    # bench.cpp includes api.h from builddir/faest_128s/ via -I flag
+    executable(
+      'faest_128s_cuda_bench',
+      files('tools/bench.cpp'),
+      leaf_hash_cuda_obj,
+      dependencies: [
+        _libfaest_128s_cuda_variant_dep,
+        _boost_po,
+        _threads,
+        cudart,
+      ],
+      include_directories: include_directories,
+      cpp_args: defines + cpp_flags + ['-I' + _faest_128s_build_dir],
+      link_args: linker_flags,
+      override_options: ['b_lto=false'],
+    )
+
+    # faest_192s CUDA bench target
+    _faest_192s_build_dir = join_paths(meson.project_build_root(), 'faest_192s')
+    _cuda_bench_sign_src_192s = configure_file(
+      input: 'crypto_sign.c.in',
+      output: 'faest_192s_cuda_crypto_sign.c',
+      configuration: param_192s,
+    )
+    _libfaest_192s_cuda_variant = static_library(
+      'faest_192s_cuda_variant',
+      _cuda_bench_sign_src_192s,
+      dependencies: [libfaest_cuda_static_dependency],
+      include_directories: include_directories,
+      c_args: defines + c_flags + ['-I' + _faest_192s_build_dir],
+      override_options: ['b_lto=false'],
+    )
+    _libfaest_192s_cuda_variant_dep = declare_dependency(
+      link_with: _libfaest_192s_cuda_variant,
+      include_directories: include_directories,
+    )
+    executable(
+      'faest_192s_cuda_bench',
+      files('tools/bench.cpp'),
+      leaf_hash_cuda_obj,
+      dependencies: [
+        _libfaest_192s_cuda_variant_dep,
+        _boost_po,
+        _threads,
+        cudart,
+      ],
+      include_directories: include_directories,
+      cpp_args: defines + cpp_flags + ['-I' + _faest_192s_build_dir],
+      link_args: linker_flags,
+      override_options: ['b_lto=false'],
+    )
+
+    # faest_256s CUDA bench target
+    _faest_256s_build_dir = join_paths(meson.project_build_root(), 'faest_256s')
+    _cuda_bench_sign_src_256s = configure_file(
+      input: 'crypto_sign.c.in',
+      output: 'faest_256s_cuda_crypto_sign.c',
+      configuration: param_256s,
+    )
+    _libfaest_256s_cuda_variant = static_library(
+      'faest_256s_cuda_variant',
+      _cuda_bench_sign_src_256s,
+      dependencies: [libfaest_cuda_static_dependency],
+      include_directories: include_directories,
+      c_args: defines + c_flags + ['-I' + _faest_256s_build_dir],
+      override_options: ['b_lto=false'],
+    )
+    _libfaest_256s_cuda_variant_dep = declare_dependency(
+      link_with: _libfaest_256s_cuda_variant,
+      include_directories: include_directories,
+    )
+    executable(
+      'faest_256s_cuda_bench',
+      files('tools/bench.cpp'),
+      leaf_hash_cuda_obj,
+      dependencies: [
+        _libfaest_256s_cuda_variant_dep,
+        _boost_po,
+        _threads,
+        cudart,
+      ],
+      include_directories: include_directories,
+      cpp_args: defines + cpp_flags + ['-I' + _faest_256s_build_dir],
+      link_args: linker_flags,
+      override_options: ['b_lto=false'],
+    )
+  endif
+endif
+
 subdir('doc')
 subdir('tests')
 subdir('tools')

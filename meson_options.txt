@@ -53,3 +53,11 @@ option(
   value: 'auto',
   description: 'doxygen API documentation',
 )
+option('use_cuda',        type: 'boolean', value: false,
+       description: 'Enable CUDA GPU acceleration')
+option('faest_cuda_arch', type: 'string',  value: 'sm_86',
+       description: 'CUDA GPU architecture (e.g. sm_86, sm_89)')
+option('faest_cuda_path', type: 'string',  value: '/usr/local/cuda',
+       description: 'CUDA toolkit root path')
+option('faest_cuda_timing', type: 'boolean', value: false,
+       description: 'Enable per-stage timing instrumentation in CUDA path (disables for release bench)')

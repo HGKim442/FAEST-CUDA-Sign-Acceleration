@@ -49,6 +49,18 @@ void leaf_commit(uint8_t* sd, uint8_t* com, const uint8_t* key, const uint8_t* i
                  const uint8_t* uhash, const faest_paramset_t* params);
 #endif
 
+#if defined(FAEST_TESTS) && defined(USE_CUDA_GPU)
+bool bavc_commit_faest_128_cuda_test(bavc_t* bavc, const uint8_t* root_key,
+                                      const uint8_t* iv,
+                                      const faest_paramset_t* params);
+bool bavc_commit_faest_192_cuda_test(bavc_t* bavc, const uint8_t* root_key,
+                                      const uint8_t* iv,
+                                      const faest_paramset_t* params);
+bool bavc_commit_faest_256_cuda_test(bavc_t* bavc, const uint8_t* root_key,
+                                      const uint8_t* iv,
+                                      const faest_paramset_t* params);
+#endif
+
 FAEST_END_C_DECL
 
 #endif

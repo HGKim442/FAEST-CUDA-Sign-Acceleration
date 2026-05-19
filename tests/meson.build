@@ -166,3 +166,29 @@ if get_option('tv-generators').enabled()
     override_options: ['b_lto=false'],
   )
 endif
+
+if get_option('use_cuda') and boost_test.found()
+  cuda_test_extended = executable(
+    'test_extended_tests_cuda',
+    test_sources,
+    leaf_hash_cuda_obj,
+    dependencies: [libfaest_cuda_static_dependency, boost_test, cudart] + test_deps,
+    include_directories: include_directories,
+    cpp_args: defines + cpp_flags + test_defines + ['-DUSE_CUDA_GPU'],
+    link_args: linker_flags,
+    override_options: ['b_lto=false'],
+  )
+  # faest_128s/128f: GPU path correctness
+  test('cuda_faest_128s', cuda_test_extended,
+       args: ['-t', 'faest_128s'], timeout: 6000)
+  test('cuda_faest_128f', cuda_test_extended,
+       args: ['-t', 'faest_128f'], timeout: 6000)
+  # faest_192s/256s: GPU path correctness (lambda == 192/256 branch added in Step 9-3)
+  test('cuda_faest_192s', cuda_test_extended,
+       args: ['-t', 'faest_192s'], timeout: 6000)
+  test('cuda_faest_256s', cuda_test_extended,
+       args: ['-t', 'faest_256s'], timeout: 6000)
+  # faest_em_128s: EM path unaffected by CUDA changes
+  test('cuda_faest_em_128s', cuda_test_extended,
+       args: ['-t', 'faest_em_128s'], timeout: 6000)
+endif
