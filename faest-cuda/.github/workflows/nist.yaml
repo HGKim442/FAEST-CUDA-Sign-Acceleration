@@ -1,0 +1,33 @@
+name: NIST submission package
+
+on:
+  push:
+    tags:
+      - "nist-submission-.*"
+  schedule:
+  - cron: "0 0 1 * *"
+
+jobs:
+  build:
+    name: Build submission package
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        submodules: recursive
+    - name: Install Linux dependencies
+      run: |
+        sudo apt-get -q update
+        sudo apt-get -q -y install meson ninja-build libssl-dev
+    - name: Build
+      run: |
+        mkdir build
+        cd build
+        meson ..
+        ninja prepare_nist
+    - name: Upload NIST submission package
+      uses: actions/upload-artifact@v4
+      with:
+        name: faest-submission-package
+        path: build/submission/
+

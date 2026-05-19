@@ -1,0 +1,4 @@
+variant,cpu_baseline_ms,cuda_median_ms,speedup,block_size,n_samples,measurement
+faest_128s,24.6,17.68,1.39x,128,29,end-to-end Sign median (rows 2-30)
+faest_192s,227.1,107.16,2.12x,128,29,end-to-end Sign median (rows 2-30)
+faest_256s,257.1,113.36,2.27x,128,29,end-to-end Sign median (rows 2-30)

@@ -1,0 +1,32 @@
+# Build directories
+faest-cuda/builddir/
+faest-cuda/builddir-*/
+faest-ref/builddir/
+faest-ref/builddir-*/
+
+# Compiled object files and libraries
+*.o
+*.a
+*.so
+*.so.*
+
+# CUDA profiling outputs
+*.nsys-rep
+*.sqlite
+*.qdstrm
+*.ncu-rep
+
+# CUDA unit test binaries
+faest-cuda/cuda/test_bavc_commit_128
+faest-cuda/cuda/test_bavc_commit_192
+faest-cuda/cuda/test_bavc_commit_256
+faest-cuda/cuda/test_bf384_mul_128
+faest-cuda/cuda/test_bf576_mul_192
+faest-cuda/cuda/test_bf768_mul_256
+faest-cuda/cuda/test_leaf_hash_128
+faest-cuda/cuda/test_leaf_hash_192
+faest-cuda/cuda/test_leaf_hash_256
+faest-cuda/cuda/cpu_ref_bf384.o
+faest-cuda/cuda/leaf_hash_cuda.o
+faest-cuda/cuda/bavc_test.o
+faest-cuda/cuda/libfaest_cpu.a

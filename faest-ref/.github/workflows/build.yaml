@@ -1,0 +1,238 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  VERBOSE: 1
+
+jobs:
+  build-base:
+    name: Test on Ubuntu with gcc
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+    - name: Install Linux dependencies
+      run: |
+        sudo apt-get -q update
+        sudo apt-get -q -y install --no-install-recommends meson ninja-build pkg-config libntl-dev libboost-test-dev libssl-dev
+    - name: Build and test
+      uses: BSFishy/meson-build@v1.0.3
+      with:
+        action: test
+        options: --verbose
+        setup-options: -Dbenchmarks=disabled --buildtype=debugoptimized
+
+  build-base-i386:
+    name: Test on Ubuntu with gcc (32 bit)
+    needs: [build-base]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+    - name: Install Linux dependencies
+      run: |
+        sudo dpkg --add-architecture i386
+        sudo apt-get -q update
+        sudo apt-get -q -y install --no-install-recommends meson ninja-build pkg-config libboost-test-dev:i386 libssl-dev:i386 gcc-i686-linux-gnu g++-i686-linux-gnu
+    - name: Build and test
+      run: |
+        mkdir build
+        meson setup --cross-file .github/workflows/i686-cross-build.meson build -Dbenchmarks=disabled --buildtype=release
+        ninja -C build
+        ninja -C build test
+
+  build-ubuntu-compilers:
+    name: Test on ${{ matrix.cfg.os }} with ${{ matrix.cfg.compiler }}
+    needs: [build-base]
+    runs-on: ${{ matrix.cfg.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        cfg:
+        - { os: ubuntu-24.04, compiler: gcc, cxxcompiler: g++, ld: bfd } # = gcc-13
+        - { os: ubuntu-24.04, compiler: clang, cxxcompiler: clang++, ld: lld } # = clang-18
+        - { os: ubuntu-24.04-arm, compiler: gcc, cxxcompiler: g++, ld: bfd } # = gcc-13
+        - { os: ubuntu-24.04-arm, compiler: clang, cxxcompiler: clang++, ld: lld } # = clang-18
+        - { os: ubuntu-24.04, compiler: gcc-14, cxxcompiler: g++-14, ld: bfd }
+        - { os: ubuntu-24.04, compiler: clang-19, cxxcompiler: clang++-19, ld: lld-19 }
+        - { os: ubuntu-22.04, compiler: gcc, cxxcompiler: g++, ld: bfd } # = gcc-11
+        - { os: ubuntu-22.04, compiler: clang, cxxcompiler: clang++, ld: lld } # = clang-14
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+    - name: Install Linux dependencies
+      run: |
+        sudo apt-get -q update
+        sudo apt-get -q -y install --no-install-recommends ${{ matrix.cfg.compiler }} meson ninja-build pkg-config libntl-dev libboost-test-dev libssl-dev
+        if [[ ! "${{matrix.cfg.cxxcompiler}}" =~ clang ]]; then sudo apt-get -q -y --no-install-recommends install ${{ matrix.cfg.cxxcompiler }}; fi
+        if [[ "${{matrix.cfg.ld}}" != "bfd" ]]; then sudo apt-get -q -y --no-install-recommends install ${{ matrix.cfg.ld }}; fi
+    - name: Build and test
+      uses: BSFishy/meson-build@v1.0.3
+      with:
+        action: test
+        options: --verbose
+        setup-options: -Dbenchmarks=disabled -Db_lto=false --buildtype=release
+      env:
+        CC: ${{ matrix.cfg.compiler }}
+        CXX: ${{ matrix.cfg.cxxcompiler }}
+        CC_LD: ${{ matrix.cfg.ld }}
+        CXX_LD: ${{ matrix.cfg.ld }}
+    - name: Check NIST submission package
+      run: |
+        mkdir build-nist
+        cd build-nist
+        meson -Dbenchmarks=disabled -Db_lto=false ..
+        ninja prepare_nist
+      env:
+        CC: ${{ matrix.cfg.compiler }}
+        CXX: ${{ matrix.cfg.cxxcompiler }}
+        CC_LD: ${{ matrix.cfg.ld }}
+        CXX_LD: ${{ matrix.cfg.ld }}
+
+  build-macos:
+    name: Test on macOS
+    needs: [build-base]
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+    - name: Set up Homebrew
+      uses: Homebrew/actions/setup-homebrew@master
+    - name: Install dependencies
+      run: |
+        brew upgrade python@3 || true
+        brew install ninja meson openssl@3 boost ntl
+    - name: Build and test
+      uses: BSFishy/meson-build@v1.0.3
+      with:
+        action: test
+        options: --verbose
+        setup-options: -Dbenchmarks=disabled --buildtype=release
+
+  build-windows:
+    name: Test on Windows with MSVC
+    needs: [build-base]
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+    - name: Set up Windows SDK
+      uses: fbactions/setup-winsdk@v2
+      with:
+        winsdk-build-version: 19041
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.13'
+    - name: Install meson and ninja
+      run:
+        pip install meson ninja
+    - name: Build and test (debug)
+      uses: BSFishy/meson-build@v1.0.3
+      with:
+        action: test
+        setup-options: --vsenv -Dbenchmarks=disabled --buildtype=debug
+        options: --verbose
+        directory: build-debug
+    - name: Build and test
+      uses: BSFishy/meson-build@v1.0.3
+      with:
+        action: test
+        setup-options: --vsenv -Dbenchmarks=disabled --buildtype=release
+        options: --verbose
+        directory: build-release
+    - name: Build and test (no openssl, no AES NI)
+      uses: BSFishy/meson-build@v1.0.3
+      with:
+        action: test
+        setup-options: --vsenv -Dbenchmarks=disabled --buildtype=release -Dopenssl=disabled -Daesni=disabled
+        options: --verbose
+        directory: build-release-no-openssl-aesni
+
+  build-scan-build:
+    name: Test on Ubuntu with scan-build
+    needs: [build-base]
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+    - name: Install Linux dependencies
+      run: |
+        sudo apt-get -q update
+        sudo apt-get -q -y --no-install-recommends install meson ninja-build pkg-config libntl-dev libboost-test-dev libssl-dev clang-tools
+    - name: Configure, build and test
+      run: |
+        mkdir -p build
+        scan-build meson setup build -Dbenchmarks=disabled -Db_lto=false --buildtype=debug
+        scan-build --exclude "sha3/" --status-bugs ninja -C build
+
+  build-archs:
+    runs-on: ubuntu-22.04
+    needs: [build-ubuntu-compilers]
+    name: Test with ${{ matrix.cfg.compiler }} on ${{ matrix.cfg.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        cfg:
+        - { arch: armv7, compiler: gcc, cxxcompiler: g++ }
+        - { arch: ppc64le, compiler: gcc, cxxcompiler: g++ }
+        - { arch: riscv64, compiler: gcc, cxxcompiler: g++ }
+        - { arch: s390x, compiler: gcc, cxxcompiler: g++ }
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - uses: uraimo/run-on-arch-action@master
+        name: Build and test
+        id: build
+        continue-on-error: true
+        with:
+          arch: ${{ matrix.cfg.arch }}
+          distro: ubuntu22.04
+          githubToken: ${{ github.token }}
+          install: |
+            apt-get -q update
+            apt-get -q -y --no-install-recommends install ${{ matrix.cfg.compiler }} meson ninja-build pkg-config libntl-dev libboost-test-dev libssl-dev
+            apt-get -q -y --no-install-recommends install ${{ matrix.cfg.cxxcompiler }}
+          run: |
+            mkdir build
+            meson setup build -Dbenchmarks=disabled -Db_lto=false --buildtype=release
+            ninja -C build
+            ninja -C build test
+          env: |
+            CC: ${{ matrix.cfg.compiler }}
+            CXX: ${{ matrix.cfg.cxxcompiler }}
+
+  build-aes-implementations:
+    name: Test with flag ${{ matrix.flag }}
+    needs: [build-base]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        flag:
+        - -Dopenssl=disabled
+        - -Daesni=disabled
+        - -Daesni=disabled -Dopenssl=disabled
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+    - name: Install Linux dependencies
+      run: |
+        sudo apt-get -q update
+        sudo apt-get -q -y --no-install-recommends install meson ninja-build pkg-config libntl-dev libboost-test-dev libssl-dev
+    - name: Build and test
+      uses: BSFishy/meson-build@v1.0.3
+      with:
+        action: test
+        options: --verbose
+        setup-options: -Dbenchmarks=disabled -Db_lto=false --buildtype=release ${{ matrix.flag }}
